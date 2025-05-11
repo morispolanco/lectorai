@@ -351,6 +351,9 @@ if 'selected_options' not in st.session_state:
     st.session_state.selected_options = {}
 if 'show_registration' not in st.session_state:
     st.session_state.show_registration = False
+if 'feedback_displayed' not in st.session_state: # Initialize feedback_displayed
+    st.session_state.feedback_displayed = False
+
 
 # --- Pantalla de Registro/Login ---
 if not st.session_state.logged_in:
@@ -414,6 +417,7 @@ if st.session_state.logged_in:
         st.session_state.answers_submitted = False
         st.session_state.selected_options = {}
         st.session_state.show_registration = False # Asegurarse de que no muestre registro al volver
+        st.session_state.feedback_displayed = False # Clear feedback state on logout
         st.rerun()
 
     st.title("Mejora tu Comprensión Lectora")
@@ -428,12 +432,13 @@ if st.session_state.logged_in:
 
     # Botón para generar nuevo texto - Resetea el estado relevante
     if st.button("Generar Texto y Preguntas"):
+        # Reset relevant session state variables
         st.session_state.current_text_id = None
         st.session_state.current_text = None
         st.session_state.current_questions = None
         st.session_state.answers_submitted = False
-        st.session_state.selected_options = {} # Limpiar opciones seleccionadas
-        st.session_state.feedback_displayed = False # Nuevo flag para controlar la visualización de feedback
+        st.session_state.selected_options = {}
+        st.session_state.feedback_displayed = False
 
         with st.spinner("Generando texto y preguntas..."):
             api_response = get_text_and_questions_from_api(selected_topic, st.session_state.user_difficulty, api_key)
@@ -445,7 +450,7 @@ if st.session_state.logged_in:
                         st.session_state.current_text_id = text_id
                         st.session_state.current_text, st.session_state.current_questions = get_text_and_questions(text_id)
                         st.success("Texto y preguntas generados con éxito.")
-                        st.rerun() # Rerun para mostrar el nuevo texto y preguntas
+                        st.rerun() # Rerun to display the new text and questions
                     else:
                          st.error("La API no devolvió el formato de datos esperado. Por favor, inténtalo de nuevo.")
                          st.write("Respuesta de la API (para depuración):", api_response) # Mostrar respuesta para depurar
@@ -456,135 +461,106 @@ if st.session_state.logged_in:
                  st.error("No se pudo obtener el texto y las preguntas de la API.")
 
 
-    # --- Sección para mostrar texto y preguntas ---
-    # Solo mostrar si hay texto y preguntas cargadas
-    if st.session_state.current_text_id and st.session_state.current_text and st.session_state.current_questions:
+    # --- Sección para mostrar texto y preguntas (antes de enviar respuestas) ---
+    # Solo mostrar si hay texto y preguntas cargadas Y las respuestas NO han sido enviadas
+    if st.session_state.current_text_id and st.session_state.current_text and st.session_state.current_questions and not st.session_state.answers_submitted:
         st.subheader(f"Texto sobre: {st.session_state.current_text['topic']}")
         st.write(st.session_state.current_text['content'])
 
         st.subheader("Preguntas de Comprensión")
 
-        # Mostrar preguntas y opciones
-        # user_answers = {} # This variable was not used
+        # Mostrar preguntas y opciones como radio buttons
         for i, question in enumerate(st.session_state.current_questions):
             st.markdown(f"**Pregunta {i+1}:** {question['question_text']}")
             options_list = [opt['option_text'] for opt in question['options']]
-
-            # Determinar la opción pre-seleccionada si las respuestas ya fueron enviadas
-            default_index = -1
-            if st.session_state.answers_submitted:
-                selected_option_id = st.session_state.selected_options.get(question['id'])
-                if selected_option_id is not None:
-                    for j, opt in enumerate(question['options']):
-                        if opt['id'] == selected_option_id:
-                            default_index = j
-                            break
 
             # Usar un key único para cada radio button group
             # Guardar la opción seleccionada en el estado de sesión
             st.session_state.selected_options[question['id']] = st.radio(
                 f"Selecciona una opción para la pregunta {i+1}:",
                 options_list,
-                index=default_index, # Usar el índice pre-seleccionado
                 key=f"question_{question['id']}",
-                disabled=st.session_state.answers_submitted # Deshabilitar si ya se enviaron respuestas
+                index=None # Start with no option selected
             )
 
-
         # Botón para enviar respuestas - Solo visible si las respuestas no han sido enviadas
-        if not st.session_state.answers_submitted:
-            if st.button("Enviar Respuestas"):
-                st.session_state.answers_submitted = True
-                correct_count = 0
-                total_questions = len(st.session_state.current_questions)
+        if st.button("Enviar Respuestas"):
+            st.session_state.answers_submitted = True
+            correct_count = 0
+            total_questions = len(st.session_state.current_questions)
 
-                # Procesar y registrar respuestas
-                for question in st.session_state.current_questions:
-                    # Convertir el texto de la opción seleccionada de nuevo a su ID
-                    selected_option_text = st.session_state.selected_options.get(question['id'])
-                    selected_option_id = None
-                    is_correct = False
-                    correct_option_text = None
+            # Process and record answers
+            for question in st.session_state.current_questions:
+                selected_option_text = st.session_state.selected_options.get(question['id'])
+                selected_option_id = None
+                is_correct = False
 
+                if selected_option_text is not None:
+                     # Find the selected option ID and check if it's correct
+                    selected_option = None
                     for opt in question['options']:
                         if opt['option_text'] == selected_option_text:
                             selected_option_id = opt['id']
-                        if opt['is_correct']:
-                             correct_option_text = opt['option_text']
+                            if opt['is_correct']:
+                                is_correct = True
+                                correct_count += 1
+                            break # Found the selected option
+
+                    # Record progress with the selected option ID
+                    record_progress(st.session_state.user_id, st.session_state.current_text_id, question['id'], selected_option_id, is_correct)
+                else:
+                    # Record progress for unanswered questions
+                    record_progress(st.session_state.user_id, st.session_state.current_text_id, question['id'], None, None)
 
 
-                    if selected_option_id is not None:
-                        # Encontrar la opción seleccionada y verificar si es correcta
-                        selected_option = None
-                        for opt in question['options']:
-                            if opt['id'] == selected_option_id:
-                                selected_option = opt
-                                break
+            # Adjust difficulty after completing a text
+            adjust_difficulty(st.session_state.user_id)
 
-                        if selected_option and selected_option['is_correct']:
-                            is_correct = True
-                            correct_count += 1
+            # Mark that feedback should be displayed
+            st.session_state.feedback_displayed = True
 
-                        # Registrar el progreso
-                        record_progress(st.session_state.user_id, st.session_state.current_text_id, question['id'], selected_option_id, is_correct)
-                    else:
-                         # Registrar el progreso (sin respuesta)
-                         record_progress(st.session_state.user_id, st.session_state.current_text_id, question['id'], None, None)
-
-                # Ajustar dificultad después de completar un texto
-                adjust_difficulty(st.session_state.user_id)
-
-                # Marcar que el feedback debe mostrarse
-                st.session_state.feedback_displayed = True
-
-                st.rerun() # Rerun para mostrar los resultados y feedback
+            st.rerun() # Rerun to display the results and feedback
 
 
-        # --- Sección para mostrar Resultados y Retroalimentación ---
-        # Solo mostrar si las respuestas han sido enviadas
-        if st.session_state.answers_submitted and st.session_state.feedback_displayed:
-             st.subheader("Resultados y Retroalimentación")
-             correct_count = 0
-             total_questions = len(st.session_state.current_questions)
+    # --- Sección para mostrar Resultados y Retroalimentación (después de enviar respuestas) ---
+    # Solo mostrar si las respuestas han sido enviadas AND feedback_displayed is True
+    if st.session_state.answers_submitted and st.session_state.feedback_displayed and st.session_state.current_text and st.session_state.current_questions:
+         st.subheader(f"Texto sobre: {st.session_state.current_text['topic']}")
+         st.write(st.session_state.current_text['content'])
 
-             for i, question in enumerate(st.session_state.current_questions):
-                 # Obtener la opción seleccionada (ahora guardada en el estado de sesión)
-                 selected_option_text = st.session_state.selected_options.get(question['id'])
-                 selected_option_id = None
-                 correct_option_text = None
-                 is_correct = False
+         st.subheader("Resultados y Retroalimentación")
+         correct_count = 0
+         total_questions = len(st.session_state.current_questions)
 
-                 # Encontrar el ID de la opción seleccionada y el texto de la opción correcta
-                 for opt in question['options']:
-                     if opt['option_text'] == selected_option_text:
-                         selected_option_id = opt['id']
-                     if opt['is_correct']:
-                         correct_option_text = opt['option_text']
+         for i, question in enumerate(st.session_state.current_questions):
+             # Get the selected option text from session state
+             selected_option_text = st.session_state.selected_options.get(question['id'])
+             correct_option_text = None
+             is_correct = False
+
+             # Find the correct option text and check if the selected answer was correct
+             for opt in question['options']:
+                 if opt['is_correct']:
+                     correct_option_text = opt['option_text']
+                 if opt['option_text'] == selected_option_text and opt['is_correct']:
+                      is_correct = True
 
 
-                 st.markdown(f"**Pregunta {i+1}:** {question['question_text']}")
+             st.markdown(f"**Pregunta {i+1}:** {question['question_text']}")
 
-                 if selected_option_id is not None:
-                     # Verificar si la respuesta seleccionada es correcta
-                     selected_option = None
-                     for opt in question['options']:
-                          if opt['id'] == selected_option_id:
-                              selected_option = opt
-                              break
-
-                     if selected_option and selected_option['is_correct']:
-                         is_correct = True
-                         st.success(f"Tu respuesta: {selected_option['option_text']} - ¡Correcto!")
-                         correct_count += 1
-                     else:
-                         st.error(f"Tu respuesta: {selected_option['option_text']} - Incorrecto. La respuesta correcta es: {correct_option_text}")
+             if selected_option_text is not None:
+                 if is_correct:
+                     st.success(f"Tu respuesta: {selected_option_text} - ¡Correcto!")
+                     correct_count += 1
                  else:
-                     st.warning(f"No respondiste a esta pregunta. La respuesta correcta es: {correct_option_text}")
+                     st.error(f"Tu respuesta: {selected_option_text} - Incorrecto. La respuesta correcta es: {correct_option_text}")
+             else:
+                 st.warning(f"No respondiste a esta pregunta. La respuesta correcta es: {correct_option_text}")
 
 
-             st.subheader("Resumen")
-             st.write(f"Obtuviste {correct_count} de {total_questions} respuestas correctas.")
-             st.write(f"Tu nuevo nivel de dificultad es: {st.session_state.user_difficulty}")
+         st.subheader("Resumen")
+         st.write(f"Obtuviste {correct_count} de {total_questions} respuestas correctas.")
+         st.write(f"Tu nuevo nivel de dificultad es: {st.session_state.user_difficulty}")
 
 
     # --- Sección de Progreso del Estudiante ---
@@ -605,4 +581,3 @@ if st.session_state.logged_in:
             st.sidebar.info("Aún no tienes historial de lectura.")
     else:
         st.sidebar.info("Inicia sesión para ver tu progreso.")
-
