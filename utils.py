@@ -23,7 +23,7 @@ GEMINI_API_KEY = get_gemini_api_key()
 def generate_text(topic, difficulty):
     prompt = f"Escribe un texto nivel {difficulty} sobre: {topic}. Incluye vocabulario apropiado para estudiantes de bachillerato."
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash :generateContent?key={GEMINI_API_KEY}"
+    https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash :generateContent?key=...
 
     payload = {
         "contents": [
