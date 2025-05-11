@@ -24,7 +24,7 @@ def generate_text(topic, difficulty):
     prompt = f"Escribe un texto nivel {difficulty} sobre: {topic}. Incluye vocabulario apropiado para estudiantes de bachillerato."
 
     payload = {
-        "model": "qwen/qwen3-0.6b-04-28:free",
+        "model": "meta-llama/llama-3-8b-instruct:free",
         "messages": [{"role": "user", "content": prompt}]
     }
 
@@ -35,17 +35,33 @@ def generate_text(topic, difficulty):
 
     try:
         response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
+            "https://openrouter.ai/api/v1/chat/completions ",
             headers=headers,
             json=payload,
             timeout=15
         )
-        response.raise_for_status()
+        response.raise_for_status()  # Lanza error si status >= 400
+
+        # Mostrar la respuesta completa para depuración
+        raw_response = response.text
+        st.info("Raw response del servidor:")
+        st.code(raw_response)
+
         data = response.json()
-        return data['choices'][0]['message']['content']
+
+        # Verificar estructura
+        if 'choices' in data and len(data['choices']) > 0:
+            return data['choices'][0]['message']['content']
+        else:
+            logging.error(f"Estructura inesperada en la respuesta: {data}")
+            return "[ERROR] Respuesta inválida del servidor."
+
     except requests.exceptions.RequestException as e:
         logging.error(f"Error en la solicitud a la API: {e}")
         return f"[ERROR] No se pudo generar el texto. Detalle: {e}"
+    except json.JSONDecodeError:
+        logging.error("La respuesta no es un JSON válido.")
+        return "[ERROR] La respuesta del servidor no es válida."
     except (KeyError, IndexError) as e:
         logging.error(f"Formato inesperado en la respuesta de la API: {e}")
         return "[ERROR] Respuesta inválida del servidor."
@@ -74,7 +90,7 @@ def generate_questions(text):
     """
 
     payload = {
-        "model": "qwen/qwen3-0.6b-04-28:free",
+        "model": "meta-llama/llama-3-8b-instruct:free",
         "messages": [{"role": "user", "content": prompt}]
     }
 
@@ -96,6 +112,9 @@ def generate_questions(text):
     except requests.exceptions.RequestException as e:
         logging.error(f"Error generando preguntas: {e}")
         return []
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
-        logging.error(f"Error analizando respuesta JSON: {e}")
+    except json.JSONDecodeError:
+        logging.error("Error analizando respuesta JSON.")
+        return []
+    except (KeyError, IndexError) as e:
+        logging.error(f"Formato inesperado en la respuesta de la API: {e}")
         return []
