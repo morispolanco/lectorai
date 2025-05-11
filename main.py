@@ -1,226 +1,577 @@
 import streamlit as st
-import requests
 import sqlite3
+import requests
 import json
-import random
-import re
 from datetime import datetime
+import os
 
-# Configuración de la página
-st.set_page_config(page_title="Mejora tu Comprensión Lectora", layout="wide")
+# --- Configuración de la Base de Datos ---
+DB_FILE = 'reading_comprehension.db'
 
-# Conexión a SQLite
-conn = sqlite3.connect('students.db', check_same_thread=False)
-c = conn.cursor()
+def init_db():
+    """Inicializa la base de datos y crea las tablas si no existen."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                difficulty_level INTEGER DEFAULT 1
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS texts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic TEXT NOT NULL,
+                content TEXT NOT NULL,
+                difficulty_level INTEGER NOT NULL
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text_id INTEGER NOT NULL,
+                question_text TEXT NOT NULL,
+                question_type TEXT NOT NULL, -- e.g., 'vocabulary', 'inference', 'critical_thinking'
+                FOREIGN KEY (text_id) REFERENCES texts (id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS options (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question_id INTEGER NOT NULL,
+                option_text TEXT NOT NULL,
+                is_correct BOOLEAN NOT NULL,
+                FOREIGN KEY (question_id) REFERENCES questions (id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_progress (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                text_id INTEGER NOT NULL,
+                question_id INTEGER NOT NULL,
+                selected_option_id INTEGER, -- Puede ser NULL si no respondió
+                is_correct BOOLEAN, -- Puede ser NULL si no respondió
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id),
+                FOREIGN KEY (text_id) REFERENCES texts (id),
+                FOREIGN KEY (question_id) REFERENCES questions (id),
+                FOREIGN KEY (selected_option_id) REFERENCES options (id)
+            )
+        ''')
+        conn.commit()
 
-# Crear tablas si no existen
-c.execute('''CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    password TEXT,
-    level INTEGER DEFAULT 1
-)''')
-c.execute('''CREATE TABLE IF NOT EXISTS progress (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    text_id INTEGER,
-    score INTEGER,
-    date TEXT,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-)''')
-conn.commit()
+# --- Funciones de Usuario y Autenticación ---
 
-# Función para obtener texto y preguntas de la API
-def get_text_and_questions(level, topic):
-    api_key = st.secrets["OPENROUTER_API_KEY"]
+def register_user(username, password):
+    """Registra un nuevo usuario en la base de datos."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
+            conn.commit()
+            return True, "Registro exitoso. Por favor, inicia sesión."
+    except sqlite3.IntegrityError:
+        return False, "El nombre de usuario ya existe."
+    except Exception as e:
+        return False, f"Error al registrar usuario: {e}"
+
+def login_user(username, password):
+    """Verifica las credenciales del usuario y devuelve el ID del usuario si son correctas."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, difficulty_level FROM users WHERE username = ? AND password = ?", (username, password))
+        result = cursor.fetchone()
+        if result:
+            return result[0], result[1] # user_id, difficulty_level
+        return None, None
+
+def get_user_difficulty(user_id):
+    """Obtiene el nivel de dificultad actual del usuario."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT difficulty_level FROM users WHERE id = ?", (user_id,))
+        result = cursor.fetchone()
+        return result[0] if result else 1 # Default to 1 if not found
+
+def update_user_difficulty(user_id, new_difficulty):
+    """Actualiza el nivel de dificultad del usuario."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET difficulty_level = ? WHERE id = ?", (new_difficulty, user_id))
+        conn.commit()
+
+# --- Interacción con OpenRouter API ---
+
+def get_text_and_questions_from_api(topic, difficulty_level, api_key):
+    """
+    Obtiene un texto y preguntas de la API de OpenRouter.
+    Solicita un texto y 5 preguntas (vocabulario, inferencia, pensamiento crítico)
+    en formato JSON.
+    """
     url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-    
-    difficulty = {1: "básico", 2: "intermedio", 3: "avanzado"}
-    prompt = f"""Genera un texto educativo de nivel {difficulty[level]} sobre {topic} (150-200 palabras) para estudiantes de bachillerato. 
-El texto debe ser claro, informativo y adecuado para mejorar la comprensión lectora. 
-Además, proporciona 5 preguntas de opción múltiple (4 opciones cada una) que evalúen vocabulario, inferencia y pensamiento crítico. 
-Incluye la respuesta correcta y una breve explicación para cada pregunta. 
-Devuelve el resultado **estrictamente en formato JSON** (sin texto adicional, comentarios ni bloques de código como ```json) con esta estructura:
-{{
-    "text": "texto generado",
+    model = "meta-llama/llama-4-maverick:free" # Usando el modelo especificado
+
+    prompt = f"""
+    Genera un texto de comprensión lectora para estudiantes de bachillerato sobre el tema "{topic}".
+    El nivel de dificultad debe ser apropiado para el nivel {difficulty_level}.
+    El texto debe tener aproximadamente 200-300 palabras.
+    Después del texto, genera 5 preguntas de opción múltiple (con 4 opciones cada una) sobre el texto.
+    Asegúrate de incluir:
+    - Al menos 1 pregunta de vocabulario.
+    - Al menos 2 preguntas de inferencia.
+    - Al menos 2 preguntas de pensamiento crítico.
+    Para cada pregunta, indica claramente cuál es la respuesta correcta.
+    Formatea la respuesta como un objeto JSON con las siguientes claves:
+    "text": "El contenido del texto aquí.",
     "questions": [
         {{
-            "question": "texto de la pregunta",
-            "options": ["opción 1", "opción 2", "opción 3", "opción 4"],
-            "correct": "opción correcta",
-            "explanation": "explicación de la respuesta"
-        }}
+            "question_text": "¿Pregunta aquí?",
+            "question_type": "vocabulario" o "inferencia" o "pensamiento_critico",
+            "options": [
+                {{"option_text": "Opción A", "is_correct": false}},
+                {{"option_text": "Opción B", "is_correct": true}},
+                {{"option_text": "Opción C", "is_correct": false}},
+                {{"option_text": "Opción D", "is_correct": false}}
+            ]
+        }},
+        ... (4 preguntas más)
     ]
-}}
-"""
-    
-    data = {
-        "model": "meta-llama/llama-4-maverick:free",
-        "messages": [{"role": "user", "content": prompt}]
+    Asegúrate de que el JSON sea válido y esté completo.
+    """
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
     }
-    
+
+    data = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ]
+    }
+
     try:
         response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
+        response.raise_for_status() # Lanza una excepción para códigos de estado de error
         result = response.json()
-        
-        if 'choices' not in result or not result['choices']:
-            st.error("Respuesta de la API vacía o inválida")
-            return None
-        
-        content = result['choices'][0]['message']['content']
-        
-        # Log the raw content for debugging
-        st.write("### Respuesta cruda de la API (para depuración):")
-        st.code(content)
-        
-        # Clean the response: remove Markdown code fences and extra text
-        cleaned_content = content
-        # Remove ```json ... ``` or similar code fences
-        cleaned_content = re.sub(r'```(?:json)?\n?([\s\S]*?)\n?```', r'\1', cleaned_content, flags=re.MULTILINE)
-        # Remove leading/trailing whitespace
-        cleaned_content = cleaned_content.strip()
-        
-        # Log the cleaned content for debugging
-        st.write("### Contenido limpio (para depuración):")
-        st.code(cleaned_content)
-        
-        # Parse the cleaned JSON
-        return json.loads(cleaned_content)
-    
-    except json.JSONDecodeError as je:
-        st.error(f"Error al parsear la respuesta de la API: {je}")
+        # Intentar parsear el contenido de la respuesta
+        api_content = result['choices'][0]['message']['content']
+
+        # La API a veces envuelve el JSON en bloques de código markdown, intentar limpiarlo
+        if api_content.startswith("```json"):
+            api_content = api_content[7:]
+            if api_content.endswith("```"):
+                api_content = api_content[:-3]
+
+        # Intentar cargar el contenido como JSON
+        parsed_content = json.loads(api_content)
+        return parsed_content
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error al conectar con la API de OpenRouter: {e}")
         return None
-    except requests.RequestException as re:
-        st.error(f"Error en la solicitud a la API: {re}")
+    except json.JSONDecodeError as e:
+        st.error(f"Error al parsear la respuesta JSON de la API: {e}. Respuesta recibida: {api_content}")
+        return None
+    except KeyError as e:
+        st.error(f"La respuesta de la API no tiene el formato esperado. Falta la clave: {e}. Respuesta completa: {result}")
         return None
     except Exception as e:
-        st.error(f"Error inesperado: {e}")
+        st.error(f"Ocurrió un error inesperado al obtener datos de la API: {e}")
         return None
 
-# Función para registrar usuario
-def register_user(username, password):
-    try:
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
+
+# --- Funciones de Datos y Progreso ---
+
+def save_text_and_questions(topic, difficulty_level, api_response):
+    """Guarda el texto y las preguntas en la base de datos."""
+    text_content = api_response['text']
+    questions_data = api_response['questions']
+
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO texts (topic, content, difficulty_level) VALUES (?, ?, ?)",
+                       (topic, text_content, difficulty_level))
+        text_id = cursor.lastrowid
+
+        for q_data in questions_data:
+            cursor.execute("INSERT INTO questions (text_id, question_text, question_type) VALUES (?, ?, ?)",
+                           (text_id, q_data['question_text'], q_data['question_type']))
+            question_id = cursor.lastrowid
+
+            for opt_data in q_data['options']:
+                cursor.execute("INSERT INTO options (question_id, option_text, is_correct) VALUES (?, ?, ?)",
+                               (question_id, opt_data['option_text'], opt_data['is_correct']))
         conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False
+    return text_id
 
-# Función para verificar login
-def login_user(username, password):
-    c.execute("SELECT id, level FROM users WHERE username = ? AND password = ?", (username, password))
-    user = c.fetchone()
-    return user if user else None
+def get_text_and_questions(text_id):
+    """Recupera un texto y sus preguntas de la base de datos."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, topic, content, difficulty_level FROM texts WHERE id = ?", (text_id,))
+        text_data = cursor.fetchone()
 
-# Función para actualizar nivel del usuario
-def update_level(user_id, score):
-    c.execute("SELECT level FROM users WHERE id = ?", (user_id,))
-    current_level = c.fetchone()[0]
-    
-    if score >= 80 and current_level < 3:
-        new_level = current_level + 1
-        c.execute("UPDATE users SET level = ? WHERE id = ?", (new_level, user_id))
-    elif score < 40 and current_level > 1:
-        new_level = current_level - 1
-        c.execute("UPDATE users SET level = ? WHERE id = ?", (new_level, user_id))
-    conn.commit()
+        if not text_data:
+            return None, None
 
-# Función para guardar progreso
-def save_progress(user_id, text_id, score):
-    date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute("INSERT INTO progress (user_id, text_id, score, date) VALUES (?, ?, ?, ?)",
-              (user_id, text_id, score, date))
-    conn.commit()
+        text = {
+            'id': text_data[0],
+            'topic': text_data[1],
+            'content': text_data[2],
+            'difficulty_level': text_data[3]
+        }
 
-# Función para obtener progreso del usuario
-def get_progress(user_id):
-    c.execute("SELECT date, score FROM progress WHERE user_id = ? ORDER BY date DESC", (user_id,))
-    return c.fetchall()
+        cursor.execute("SELECT id, question_text, question_type FROM questions WHERE text_id = ?", (text_id,))
+        questions_data = cursor.fetchall()
 
-# Interfaz principal
-def main():
-    if 'user' not in st.session_state:
-        st.session_state.user = None
-        st.session_state.page = 'login'
+        questions = []
+        for q_data in questions_data:
+            question_id = q_data[0]
+            cursor.execute("SELECT id, option_text, is_correct FROM options WHERE question_id = ?", (question_id,))
+            options_data = cursor.fetchall()
+            options = [{'id': opt[0], 'option_text': opt[1], 'is_correct': bool(opt[2])} for opt in options_data]
+            questions.append({
+                'id': question_id,
+                'question_text': q_data[1],
+                'question_type': q_data[2],
+                'options': options
+            })
+        return text, questions
 
-    if st.session_state.user is None:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Iniciar Sesión")
-            login_username = st.text_input("Usuario", key="login_user")
-            login_password = st.text_input("Contraseña", type="password", key="login_pass")
-            if st.button("Iniciar Sesión"):
-                user = login_user(login_username, login_password)
-                if user:
-                    st.session_state.user = {'id': user[0], 'level': user[1], 'username': login_username}
-                    st.session_state.page = 'main'
-                    st.rerun()
+def record_progress(user_id, text_id, question_id, selected_option_id, is_correct):
+    """Registra el progreso del usuario en la base de datos."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO user_progress (user_id, text_id, question_id, selected_option_id, is_correct) VALUES (?, ?, ?, ?, ?)",
+                       (user_id, text_id, question_id, selected_option_id, is_correct))
+        conn.commit()
+
+def get_user_performance_metrics(user_id):
+    """Calcula métricas de rendimiento del usuario (ej. porcentaje de respuestas correctas)."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM user_progress WHERE user_id = ?", (user_id,))
+        total_attempts = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM user_progress WHERE user_id = ? AND is_correct = 1", (user_id,))
+        correct_answers = cursor.fetchone()[0]
+
+        if total_attempts == 0:
+            return 0, 0
+        accuracy = (correct_answers / total_attempts) * 100
+        return total_attempts, accuracy
+
+def get_user_reading_history(user_id):
+    """Obtiene el historial de lectura del usuario."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                t.topic,
+                t.difficulty_level,
+                COUNT(up.question_id) as total_questions,
+                SUM(up.is_correct) as correct_answers,
+                MAX(up.timestamp) as last_attempt
+            FROM user_progress up
+            JOIN questions q ON up.question_id = q.id
+            JOIN texts t ON q.text_id = t.id
+            WHERE up.user_id = ?
+            GROUP BY t.id, t.topic, t.difficulty_level
+            ORDER BY last_attempt DESC
+        """, (user_id,))
+        return cursor.fetchall()
+
+# --- Lógica de Ajuste de Dificultad (Ejemplo Simple) ---
+# Esto es un ejemplo básico. Una implementación más sofisticada podría
+# considerar una ventana de respuestas recientes, tipos de preguntas, etc.
+
+def adjust_difficulty(user_id):
+    """Ajusta el nivel de dificultad del usuario basado en su rendimiento reciente."""
+    # Obtener las últimas N respuestas (ej. 10)
+    N = 10
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT is_correct FROM user_progress
+            WHERE user_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, (user_id, N))
+        recent_results = cursor.fetchall()
+
+    if len(recent_results) < N:
+        # No hay suficientes datos para ajustar la dificultad
+        return
+
+    correct_count = sum([r[0] for r in recent_results if r[0] is not None]) # Sumar solo si is_correct no es NULL
+    accuracy = (correct_count / N) * 100
+
+    current_difficulty = get_user_difficulty(user_id)
+    new_difficulty = current_difficulty
+
+    # Umbrales de ejemplo para ajuste
+    if accuracy >= 80 and current_difficulty < 5: # Si el rendimiento es alto, aumenta la dificultad (máx 5)
+        new_difficulty = current_difficulty + 1
+    elif accuracy < 40 and current_difficulty > 1: # Si el rendimiento es bajo, disminuye la dificultad (mín 1)
+        new_difficulty = current_difficulty - 1
+
+    if new_difficulty != current_difficulty:
+        update_user_difficulty(user_id, new_difficulty)
+        st.session_state.user_difficulty = new_difficulty # Actualizar en el estado de sesión
+
+# --- Interfaz de Usuario de Streamlit ---
+
+st.set_page_config(page_title="Comprensión Lectora para Bachillerato", layout="wide")
+
+# Inicializar la base de datos al inicio
+init_db()
+
+# Estado de sesión
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = None
+if 'username' not in st.session_state:
+    st.session_state.username = None
+if 'user_difficulty' not in st.session_state:
+    st.session_state.user_difficulty = 1 # Dificultad por defecto
+if 'current_text_id' not in st.session_state:
+    st.session_state.current_text_id = None
+if 'current_questions' not in st.session_state:
+    st.session_state.current_questions = None
+if 'answers_submitted' not in st.session_state:
+    st.session_state.answers_submitted = False
+if 'selected_options' not in st.session_state:
+    st.session_state.selected_options = {}
+if 'show_registration' not in st.session_state:
+    st.session_state.show_registration = False
+
+# --- Pantalla de Registro/Login ---
+if not st.session_state.logged_in:
+    st.title("Bienvenido a la Aplicación de Comprensión Lectora")
+
+    if st.session_state.show_registration:
+        st.subheader("Registro de Nuevo Usuario")
+        new_username = st.text_input("Nombre de Usuario", key="reg_username")
+        new_password = st.text_input("Contraseña", type="password", key="reg_password")
+        if st.button("Registrarse"):
+            if new_username and new_password:
+                success, message = register_user(new_username, new_password)
+                if success:
+                    st.success(message)
+                    st.session_state.show_registration = False # Volver a la pantalla de login
                 else:
-                    st.error("Usuario o contraseña incorrectos")
-
-        with col2:
-            st.subheader("Registrarse")
-            reg_username = st.text_input("Nuevo usuario", key="reg_user")
-            reg_password = st.text_input("Nueva contraseña", type="password", key="reg_pass")
-            if st.button("Registrarse"):
-                if register_user(reg_username, reg_password):
-                    st.success("Usuario registrado con éxito")
-                else:
-                    st.error("El usuario ya existe")
+                    st.error(message)
+            else:
+                st.warning("Por favor, ingresa nombre de usuario y contraseña.")
+        if st.button("Ya tengo cuenta (Ir a Iniciar Sesión)"):
+             st.session_state.show_registration = False
+             st.rerun() # Forzar un rerun para mostrar el formulario de login
 
     else:
-        st.sidebar.title(f"Bienvenido, {st.session_state.user['username']}")
-        if st.sidebar.button("Cerrar Sesión"):
-            st.session_state.user = None
-            st.session_state.page = 'login'
-            st.rerun()
+        st.subheader("Iniciar Sesión")
+        username = st.text_input("Nombre de Usuario", key="login_username")
+        password = st.text_input("Contraseña", type="password", key="login_password")
+        if st.button("Iniciar Sesión"):
+            if username and password:
+                user_id, difficulty = login_user(username, password)
+                if user_id:
+                    st.session_state.logged_in = True
+                    st.session_state.user_id = user_id
+                    st.session_state.username = username
+                    st.session_state.user_difficulty = difficulty
+                    st.success(f"¡Bienvenido, {username}!")
+                    st.rerun() # Forzar un rerun para mostrar el contenido principal
+                else:
+                    st.error("Nombre de usuario o contraseña incorrectos.")
+            else:
+                st.warning("Por favor, ingresa nombre de usuario y contraseña.")
+        if st.button("¿No tienes cuenta? Regístrate aquí."):
+            st.session_state.show_registration = True
+            st.rerun() # Forzar un rerun para mostrar el formulario de registro
 
-        topics = ["Cultura general", "Actualidad", "Ciencia", "Tecnología", "Historia", "Filosofía"]
-        selected_topic = st.selectbox("Selecciona un tema", topics)
-        
-        if st.button("Generar nuevo texto"):
-            st.session_state.content = get_text_and_questions(st.session_state.user['level'], selected_topic)
-            st.session_state.answers = {}
-            st.session_state.feedback = {}
-        
-        if 'content' in st.session_state and st.session_state.content:
-            st.write("### Texto")
-            st.write(st.session_state.content['text'])
-            
-            st.write("### Preguntas")
-            for i, q in enumerate(st.session_state.content['questions']):
-                st.write(q['question'])
-                options = q['options']
-                answer = st.radio("Selecciona una opción:", options, key=f"q{i}")
-                st.session_state.answers[i] = answer
-                
-                if st.button("Enviar respuesta", key=f"submit{i}"):
-                    correct = q['correct']
-                    if answer == correct:
-                        st.session_state.feedback[i] = f"¡Correcto! {q['explanation']}"
+# --- Contenido Principal de la Aplicación (si está logueado) ---
+if st.session_state.logged_in:
+    st.sidebar.title(f"Usuario: {st.session_state.username}")
+    st.sidebar.write(f"Nivel de Dificultad: {st.session_state.user_difficulty}")
+
+    if st.sidebar.button("Cerrar Sesión"):
+        # Limpiar estado de sesión al cerrar sesión
+        st.session_state.logged_in = False
+        st.session_state.user_id = None
+        st.session_state.username = None
+        st.session_state.user_difficulty = 1
+        st.session_state.current_text_id = None
+        st.session_state.current_questions = None
+        st.session_state.answers_submitted = False
+        st.session_state.selected_options = {}
+        st.session_state.show_registration = False # Asegurarse de que no muestre registro al volver
+        st.rerun()
+
+    st.title("Mejora tu Comprensión Lectora")
+
+    # --- Sección para obtener nuevo texto ---
+    st.subheader("Obtener un Nuevo Texto")
+    topics = ["Cultura General", "Actualidad", "Ciencia", "Tecnología", "Historia", "Filosofía"]
+    selected_topic = st.selectbox("Selecciona un tema:", topics)
+
+    # Obtener la API Key de los secrets de Streamlit
+    api_key = st.secrets["OPENROUTER_API_KEY"]
+
+    if st.button("Generar Texto y Preguntas"):
+        with st.spinner("Generando texto y preguntas..."):
+            api_response = get_text_and_questions_from_api(selected_topic, st.session_state.user_difficulty, api_key)
+            if api_response:
+                try:
+                    # Validar que la respuesta de la API tenga el formato esperado
+                    if 'text' in api_response and 'questions' in api_response and isinstance(api_response['questions'], list) and len(api_response['questions']) == 5:
+                        text_id = save_text_and_questions(selected_topic, st.session_state.user_difficulty, api_response)
+                        st.session_state.current_text_id = text_id
+                        st.session_state.current_text, st.session_state.current_questions = get_text_and_questions(text_id)
+                        st.session_state.answers_submitted = False
+                        st.session_state.selected_options = {}
+                        st.success("Texto y preguntas generados con éxito.")
                     else:
-                        st.session_state.feedback[i] = f"Incorrecto. {q['explanation']}"
-                
-                if i in st.session_state.feedback:
-                    st.write(st.session_state.feedback[i])
-            
-            if len(st.session_state.answers) == 5:
-                score = sum(1 for i in range(5) if st.session_state.answers[i] == st.session_state.content['questions'][i]['correct']) * 20
-                st.write(f"### Puntuación: {score}%")
-                save_progress(st.session_state.user['id'], random.randint(1, 1000), score)
-                update_level(st.session_state.user['id'], score)
-                
-                # Mostrar progreso
-                st.write("### Progreso")
-                progress = get_progress(st.session_state.user['id'])
-                for date, prog_score in progress[:5]:  # Mostrar últimos 5 intentos
-                    st.write(f"Fecha: {date}, Puntuación: {prog_score}%")
+                         st.error("La API no devolvió el formato de datos esperado. Por favor, inténtalo de nuevo.")
+                         st.write("Respuesta de la API (para depuración):", api_response) # Mostrar respuesta para depurar
+                except Exception as e:
+                    st.error(f"Error al procesar la respuesta de la API o guardar en la base de datos: {e}")
+                    st.write("Respuesta de la API (para depuración):", api_response) # Mostrar respuesta para depurar
 
-if __name__ == "__main__":
-    main()
+    # --- Sección para mostrar texto y preguntas ---
+    if st.session_state.current_text_id:
+        st.subheader(f"Texto sobre: {st.session_state.current_text['topic']}")
+        st.write(st.session_state.current_text['content'])
+
+        st.subheader("Preguntas de Comprensión")
+
+        # Mostrar preguntas y opciones
+        user_answers = {}
+        for i, question in enumerate(st.session_state.current_questions):
+            st.markdown(f"**Pregunta {i+1}:** {question['question_text']}")
+            options_list = [opt['option_text'] for opt in question['options']]
+            # Usar un key único para cada radio button group
+            selected_option_text = st.radio(
+                f"Selecciona una opción para la pregunta {i+1}:",
+                options_list,
+                key=f"question_{question['id']}",
+                disabled=st.session_state.answers_submitted # Deshabilitar si ya se enviaron respuestas
+            )
+
+            # Encontrar el ID de la opción seleccionada
+            selected_option_id = None
+            for opt in question['options']:
+                if opt['option_text'] == selected_option_text:
+                    selected_option_id = opt['id']
+                    break
+
+            st.session_state.selected_options[question['id']] = selected_option_id # Guardar la opción seleccionada
+
+        # Botón para enviar respuestas
+        if st.button("Enviar Respuestas", disabled=st.session_state.answers_submitted):
+            st.session_state.answers_submitted = True
+            correct_count = 0
+            total_questions = len(st.session_state.current_questions)
+
+            st.subheader("Resultados y Retroalimentación")
+            for question in st.session_state.current_questions:
+                selected_option_id = st.session_state.selected_options.get(question['id'])
+                is_correct = False
+                feedback = ""
+
+                st.markdown(f"**Pregunta {i+1}:** {question['question_text']}")
+
+                if selected_option_id is not None:
+                    # Encontrar la opción seleccionada y la opción correcta
+                    selected_option = None
+                    correct_option = None
+                    for opt in question['options']:
+                        if opt['id'] == selected_option_id:
+                            selected_option = opt
+                        if opt['is_correct']:
+                            correct_option = opt
+
+                    if selected_option and selected_option['is_correct']:
+                        is_correct = True
+                        correct_count += 1
+                        feedback = "¡Correcto!"
+                        st.success(f"Tu respuesta: {selected_option['option_text']} - {feedback}")
+                    else:
+                        feedback = f"Incorrecto. La respuesta correcta es: {correct_option['option_text']}"
+                        st.error(f"Tu respuesta: {selected_option['option_text']} - {feedback}")
+
+                    # Registrar el progreso
+                    record_progress(st.session_state.user_id, st.session_state.current_text_id, question['id'], selected_option_id, is_correct)
+                else:
+                    feedback = "No respondiste a esta pregunta."
+                    st.warning(f"No respondiste a esta pregunta.")
+                    # Registrar el progreso (sin respuesta)
+                    record_progress(st.session_state.user_id, st.session_state.current_text_id, question['id'], None, None)
+
+
+            st.subheader("Resumen")
+            st.write(f"Obtuviste {correct_count} de {total_questions} respuestas correctas.")
+
+            # Ajustar dificultad después de completar un texto
+            adjust_difficulty(st.session_state.user_id)
+            st.write(f"Tu nuevo nivel de dificultad es: {st.session_state.user_difficulty}")
+
+            # Limpiar el texto actual y las preguntas para que se pueda cargar uno nuevo
+            st.session_state.current_text_id = None
+            st.session_state.current_text = None
+            st.session_state.current_questions = None
+            st.session_state.selected_options = {} # Limpiar opciones seleccionadas
+            # No resetear answers_submitted aquí, se reseteará al generar nuevo texto
+
+        # Mostrar retroalimentación si las respuestas ya fueron enviadas
+        if st.session_state.answers_submitted:
+             st.subheader("Resultados y Retroalimentación")
+             correct_count = 0
+             total_questions = len(st.session_state.current_questions)
+
+             for i, question in enumerate(st.session_state.current_questions):
+                 selected_option_id = st.session_state.selected_options.get(question['id'])
+
+                 st.markdown(f"**Pregunta {i+1}:** {question['question_text']}")
+
+                 if selected_option_id is not None:
+                     selected_option = None
+                     correct_option = None
+                     for opt in question['options']:
+                         if opt['id'] == selected_option_id:
+                             selected_option = opt
+                         if opt['is_correct']:
+                             correct_option = opt
+
+                     if selected_option and selected_option['is_correct']:
+                         st.success(f"Tu respuesta: {selected_option['option_text']} - ¡Correcto!")
+                         correct_count += 1
+                     else:
+                         st.error(f"Tu respuesta: {selected_option['option_text']} - Incorrecto. La respuesta correcta es: {correct_option['option_text']}")
+                 else:
+                     st.warning(f"No respondiste a esta pregunta.")
+
+             st.subheader("Resumen")
+             st.write(f"Obtuviste {correct_count} de {total_questions} respuestas correctas.")
+
+
+    # --- Sección de Progreso del Estudiante ---
+    st.sidebar.subheader("Tu Progreso")
+    total_attempts, accuracy = get_user_performance_metrics(st.session_state.user_id)
+    st.sidebar.write(f"Intentos Totales: {total_attempts}")
+    st.sidebar.write(f"Precisión General: {accuracy:.2f}%")
+
+    st.sidebar.subheader("Historial de Lectura")
+    reading_history = get_user_reading_history(st.session_state.user_id)
+    if reading_history:
+        for history_item in reading_history:
+            topic, difficulty, total_q, correct_q, last_attempt = history_item
+            history_accuracy = (correct_q / total_q) * 100 if total_q > 0 else 0
+            st.sidebar.markdown(f"- **{topic}** (Nivel {difficulty}): {correct_q}/{total_q} correctas ({history_accuracy:.1f}%)")
+    else:
+        st.sidebar.info("Aún no tienes historial de lectura.")
+
