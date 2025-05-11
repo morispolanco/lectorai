@@ -68,8 +68,11 @@ if st.session_state.logged_in:
             st.session_state.current_topic = topic
 
     if st.session_state.text:
-        st.markdown("### 📘 Texto generado:")
-        st.write(st.session_state.text)
+        if "[ERROR]" in st.session_state.text:
+            st.error(st.session_state.text)
+        else:
+            st.markdown("### 📘 Texto generado:")
+            st.write(st.session_state.text)
 
     if st.session_state.questions:
         st.markdown("### ❓ Preguntas")
