@@ -44,7 +44,7 @@ def get_text_and_questions(level, topic):
 El texto debe ser claro, informativo y adecuado para mejorar la comprensión lectora. 
 Además, proporciona 5 preguntas de opción múltiple (4 opciones cada una) que evalúen vocabulario, inferencia y pensamiento crítico. 
 Incluye la respuesta correcta y una breve explicación para cada pregunta. 
-Devuelve el resultado **estrictamente en formato JSON** (sin texto adicional ni comentarios) con esta estructura:
+Devuelve el resultado **estrictamente en formato JSON** (sin texto adicional, comentarios ni bloques de código como ```json) con esta estructura:
 {{
     "text": "texto generado",
     "questions": [
@@ -74,17 +74,20 @@ Devuelve el resultado **estrictamente en formato JSON** (sin texto adicional ni 
         
         content = result['choices'][0]['message']['content']
         
-        # Log the raw content for debugging (visible in Streamlit logs)
+        # Log the raw content for debugging
         st.write("### Respuesta cruda de la API (para depuración):")
         st.code(content)
         
-        # Clean the response to extract JSON (remove code fences or extra text)
-        json_match = re.search(r'\{.*\}', content, re.DOTALL)
-        if json_match:
-            cleaned_content = json_match.group(0)
-        else:
-            st.error("No se encontró un JSON válido en la respuesta de la API")
-            return None
+        # Clean the response: remove Markdown code fences and extra text
+        cleaned_content = content
+        # Remove ```json ... ``` or similar code fences
+        cleaned_content = re.sub(r'```(?:json)?\n?([\s\S]*?)\n?```', r'\1', cleaned_content, flags=re.MULTILINE)
+        # Remove leading/trailing whitespace
+        cleaned_content = cleaned_content.strip()
+        
+        # Log the cleaned content for debugging
+        st.write("### Contenido limpio (para depuración):")
+        st.code(cleaned_content)
         
         # Parse the cleaned JSON
         return json.loads(cleaned_content)
