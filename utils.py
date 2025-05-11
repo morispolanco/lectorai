@@ -35,7 +35,7 @@ def generate_text(topic, difficulty):
 
     try:
         response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions ",
+            "https://openrouter.ai/api/v1/chat/completions",
             headers=headers,
             json=payload,
             timeout=15
