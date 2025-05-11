@@ -2,7 +2,8 @@ import streamlit as st
 import db
 import utils
 
-st.set_page_config(page_title="LectorAI", page_icon="📚")
+# Configuración de página
+st.set_page_config(page_title="LectorAI - Comprensión Lectora", page_icon="📚")
 
 # Inicializar base de datos
 db.init_db()
@@ -12,6 +13,8 @@ if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'student_id' not in st.session_state:
     st.session_state.student_id = None
+if 'username' not in st.session_state:
+    st.session_state.username = ""
 if 'current_topic' not in st.session_state:
     st.session_state.current_topic = ""
 if 'questions' not in st.session_state:
@@ -19,7 +22,7 @@ if 'questions' not in st.session_state:
 if 'text' not in st.session_state:
     st.session_state.text = ""
 
-# Menú lateral
+# Menú lateral (login/registro)
 with st.sidebar:
     if st.session_state.logged_in:
         st.write(f"Bienvenido, {st.session_state.username}")
@@ -52,12 +55,20 @@ with st.sidebar:
                 else:
                     st.error("El nombre de usuario ya existe")
 
+# Contenido principal si está logueado
 if st.session_state.logged_in:
     st.title("📚 LectorAI - Mejora tu comprensión lectora")
 
     col1, col2 = st.columns(2)
     with col1:
-        topic = st.selectbox("Tema", ["Cultura general", "Actualidad", "Ciencia", "Tecnología", "Historia", "Filosofía"])
+        topic = st.selectbox("Tema", [
+            "Cultura general",
+            "Actualidad",
+            "Ciencia",
+            "Tecnología",
+            "Historia",
+            "Filosofía"
+        ])
     with col2:
         difficulty = st.selectbox("Dificultad", ["Fácil", "Medio", "Avanzado"])
 
@@ -80,7 +91,7 @@ if st.session_state.logged_in:
         correct_count = 0
 
         for i, q in enumerate(st.session_state.questions):
-            st.markdown(f"**{i+1}. {q['question']}**")
+            st.markdown(f"**{i + 1}. {q['question']}**")
             answer = st.radio("", options=q["options"], key=f"q{i}")
             answers.append(answer)
             if answer == q["correct"]:
@@ -99,6 +110,6 @@ if st.session_state.logged_in:
     progress = db.get_progress(st.session_state.student_id)
     if progress:
         for p in progress:
-            st.sidebar.write(f"{p[0]} | Nivel: {p[1]} | Acierto: {p[2]*100:.1f}%")
+            st.sidebar.write(f"{p[0]} | Nivel: {p[1]} | Acierto: {p[2] * 100:.1f}%")
     else:
         st.sidebar.write("No hay registros aún.")
