@@ -1,6 +1,6 @@
 import os
-import requests
 import json
+import requests
 import streamlit as st
 import logging
 
@@ -8,63 +8,55 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 # Obtener clave desde variables de entorno o secrets
-def get_api_key():
-    api_key = os.getenv("OPENROUTER_API_KEY")
+def get_gemini_api_key():
+    api_key = os.getenv("GEMINI_API_KEY")
     if api_key:
         return api_key
     try:
-        return st.secrets["OPENROUTER_API_KEY"]
+        return st.secrets["gemini_api_key"]
     except KeyError:
-        st.error("No se encontró la clave API en variables de entorno ni en secrets.toml")
+        st.error("No se encontró la clave GEMINI_API_KEY")
         st.stop()
 
-API_KEY = get_api_key()
+GEMINI_API_KEY = get_gemini_api_key()
 
 def generate_text(topic, difficulty):
     prompt = f"Escribe un texto nivel {difficulty} sobre: {topic}. Incluye vocabulario apropiado para estudiantes de bachillerato."
 
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash :generateContent?key={GEMINI_API_KEY}"
+
     payload = {
-        "model": "meta-llama/llama-3-8b-instruct:free",
-        "messages": [{"role": "user", "content": prompt}]
+        "contents": [
+            {
+                "parts": [{"text": prompt}]
+            }
+        ]
     }
 
     headers = {
-        "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
 
     try:
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=15
-        )
-        response.raise_for_status()  # Lanza error si status >= 400
-
-        # Mostrar la respuesta completa para depuración
-        raw_response = response.text
-        st.info("Raw response del servidor:")
-        st.code(raw_response)
-
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
+        response.raise_for_status()
         data = response.json()
 
-        # Verificar estructura
-        if 'choices' in data and len(data['choices']) > 0:
-            return data['choices'][0]['message']['content']
-        else:
+        # Mostrar respuesta completa para depuración
+        if "error" in data:
+            logging.error(f"Error de Gemini API: {data['error']}")
+            return "[ERROR] " + data['error']['message']
+
+        try:
+            content = data['candidates'][0]['content']['parts'][0]['text']
+            return content
+        except (KeyError, IndexError) as e:
             logging.error(f"Estructura inesperada en la respuesta: {data}")
             return "[ERROR] Respuesta inválida del servidor."
-
     except requests.exceptions.RequestException as e:
-        logging.error(f"Error en la solicitud a la API: {e}")
+        logging.error(f"Error en la solicitud a Gemini API: {e}")
         return f"[ERROR] No se pudo generar el texto. Detalle: {e}"
-    except json.JSONDecodeError:
-        logging.error("La respuesta no es un JSON válido.")
-        return "[ERROR] La respuesta del servidor no es válida."
-    except (KeyError, IndexError) as e:
-        logging.error(f"Formato inesperado en la respuesta de la API: {e}")
-        return "[ERROR] Respuesta inválida del servidor."
+
 
 def generate_questions(text):
     if "[ERROR]" in text:
@@ -89,32 +81,31 @@ def generate_questions(text):
     ]
     """
 
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash :generateContent?key={GEMINI_API_KEY}"
+
     payload = {
-        "model": "meta-llama/llama-3-8b-instruct:free",
-        "messages": [{"role": "user", "content": prompt}]
+        "contents": [
+            {
+                "parts": [{"text": prompt}]
+            }
+        ]
     }
 
     headers = {
-        "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
 
     try:
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions ",
-            headers=headers,
-            json=payload,
-            timeout=15
-        )
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
         response.raise_for_status()
-        content = response.json()['choices'][0]['message']['content']
-        return json.loads(content)
+        data = response.json()
+
+        try:
+            content = data['candidates'][0]['content']['parts'][0]['text']
+            return json.loads(content)
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            logging.error(f"Error al procesar la respuesta: {e}")
+            return []
     except requests.exceptions.RequestException as e:
-        logging.error(f"Error generando preguntas: {e}")
-        return []
-    except json.JSONDecodeError:
-        logging.error("Error analizando respuesta JSON.")
-        return []
-    except (KeyError, IndexError) as e:
-        logging.error(f"Formato inesperado en la respuesta de la API: {e}")
+        logging.error(f"Error en la solicitud a Gemini API: {e}")
         return []
