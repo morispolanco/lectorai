@@ -39,23 +39,25 @@ def get_text_and_questions(level, topic):
     }
     
     difficulty = {1: "básico", 2: "intermedio", 3: "avanzado"}
+    # Escapamos correctamente las comillas en el JSON interno
     prompt = f"""Genera un texto educativo de nivel {difficulty[level]} sobre {topic} (150-200 palabras) para estudiantes de bachillerato. 
-    El texto debe ser claro, informativo y adecuado para mejorar la comprensión lectora. 
-    Además, proporciona 5 preguntas de opción múltiple (4 opciones cada una) que evalúen vocabulario, inferencia y pensamiento crítico. 
-    Incluye la respuesta correcta y una breve explicación para cada pregunta. 
-    Devuelve el resultado en formato JSON con esta estructura:
-    {
-        "text": "texto generado",
-        "questions": [
-            {
-                "question": "texto de la pregunta",
-                "options": ["opción 1", "opción 2", "opción 3", "opción 4"],
-                "correct": "opción correcta",
-                "explanation": "explicación de la respuesta"
-            },
-            ...
-        ]
-    }"""
+El texto debe ser claro, informativo y adecuado para mejorar la comprensión lectora. 
+Además, proporciona 5 preguntas de opción múltiple (4 opciones cada una) que evalúen vocabulario, inferencia y pensamiento crítico. 
+Incluye la respuesta correcta y una breve explicación para cada pregunta. 
+Devuelve el resultado en formato JSON con esta estructura:
+{{
+    "text": "texto generado",
+    "questions": [
+        {{
+            "question": "texto de la pregunta",
+            "options": ["opción 1", "opción 2", "opción 3", "opción 4"],
+            "correct": "opción correcta",
+            "explanation": "explicación de la respuesta"
+        }},
+        ...
+    ]
+}}
+"""
     
     data = {
         "model": "meta-llama/llama-4-maverick:free",
@@ -65,10 +67,20 @@ def get_text_and_questions(level, topic):
     try:
         response = requests.post(url, headers=headers, json=data)
         response.raise_for_status()
-        result = response.json()['choices'][0]['message']['content']
-        return json.loads(result)
+        result = response.json()
+        if 'choices' not in result or not result['choices']:
+            st.error("Respuesta de la API vacía o inválida")
+            return None
+        content = result['choices'][0]['message']['content']
+        return json.loads(content)
+    except json.JSONDecodeError as je:
+        st.error(f"Error al parsear la respuesta de la API: {je}")
+        return None
+    except requests.RequestException as re:
+        st.error(f"Error en la solicitud a la API: {re}")
+        return None
     except Exception as e:
-        st.error(f"Error al generar contenido: {e}")
+        st.error(f"Error inesperado: {e}")
         return None
 
 # Función para registrar usuario
