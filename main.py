@@ -3,6 +3,7 @@ import requests
 import sqlite3
 import json
 import random
+import re
 from datetime import datetime
 
 # Configuración de la página
@@ -39,12 +40,11 @@ def get_text_and_questions(level, topic):
     }
     
     difficulty = {1: "básico", 2: "intermedio", 3: "avanzado"}
-    # Escapamos correctamente las comillas en el JSON interno
     prompt = f"""Genera un texto educativo de nivel {difficulty[level]} sobre {topic} (150-200 palabras) para estudiantes de bachillerato. 
 El texto debe ser claro, informativo y adecuado para mejorar la comprensión lectora. 
 Además, proporciona 5 preguntas de opción múltiple (4 opciones cada una) que evalúen vocabulario, inferencia y pensamiento crítico. 
 Incluye la respuesta correcta y una breve explicación para cada pregunta. 
-Devuelve el resultado en formato JSON con esta estructura:
+Devuelve el resultado **estrictamente en formato JSON** (sin texto adicional ni comentarios) con esta estructura:
 {{
     "text": "texto generado",
     "questions": [
@@ -53,8 +53,7 @@ Devuelve el resultado en formato JSON con esta estructura:
             "options": ["opción 1", "opción 2", "opción 3", "opción 4"],
             "correct": "opción correcta",
             "explanation": "explicación de la respuesta"
-        }},
-        ...
+        }}
     ]
 }}
 """
@@ -68,11 +67,28 @@ Devuelve el resultado en formato JSON con esta estructura:
         response = requests.post(url, headers=headers, json=data)
         response.raise_for_status()
         result = response.json()
+        
         if 'choices' not in result or not result['choices']:
             st.error("Respuesta de la API vacía o inválida")
             return None
+        
         content = result['choices'][0]['message']['content']
-        return json.loads(content)
+        
+        # Log the raw content for debugging (visible in Streamlit logs)
+        st.write("### Respuesta cruda de la API (para depuración):")
+        st.code(content)
+        
+        # Clean the response to extract JSON (remove code fences or extra text)
+        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        if json_match:
+            cleaned_content = json_match.group(0)
+        else:
+            st.error("No se encontró un JSON válido en la respuesta de la API")
+            return None
+        
+        # Parse the cleaned JSON
+        return json.loads(cleaned_content)
+    
     except json.JSONDecodeError as je:
         st.error(f"Error al parsear la respuesta de la API: {je}")
         return None
