@@ -163,7 +163,7 @@ def main():
             st.write(st.session_state.content['text'])
             
             st.write("### Preguntas")
-            for i, q in enumerate(st.session_state.content['questions'],ರ:question
+            for i, q in enumerate(st.session_state.content['questions']):
                 st.write(q['question'])
                 options = q['options']
                 answer = st.radio("Selecciona una opción:", options, key=f"q{i}")
