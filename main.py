@@ -27,7 +27,7 @@ with st.sidebar:
             st.session_state.logged_in = False
             st.session_state.username = ""
             st.session_state.student_id = None
-            st.experimental_rerun()
+            st.rerun()
     else:
         option = st.selectbox("Acceso", ["Iniciar sesión", "Registrarse"])
         if option == "Iniciar sesión":
@@ -40,7 +40,7 @@ with st.sidebar:
                     st.session_state.username = username
                     st.session_state.student_id = user[0]
                     st.success("Inicio de sesión exitoso")
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.error("Usuario o contraseña incorrectos")
         elif option == "Registrarse":
