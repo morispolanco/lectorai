@@ -33,7 +33,7 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 text_id INTEGER NOT NULL,
                 question_text TEXT NOT NULL,
-                question_type TEXT NOT NULL, -- e.g., 'vocabulary', 'inference', 'critical_thinking'
+                question_type TEXT NOT NULL, -- e.g., 'vocabulario', 'inferencia', 'pensamiento_critico'
                 FOREIGN KEY (text_id) REFERENCES texts (id)
             )
         ''')
@@ -341,6 +341,8 @@ if 'user_difficulty' not in st.session_state:
     st.session_state.user_difficulty = 1 # Dificultad por defecto
 if 'current_text_id' not in st.session_state:
     st.session_state.current_text_id = None
+if 'current_text' not in st.session_state: # Added initialization for current_text
+    st.session_state.current_text = None
 if 'current_questions' not in st.session_state:
     st.session_state.current_questions = None
 if 'answers_submitted' not in st.session_state:
@@ -364,6 +366,7 @@ if not st.session_state.logged_in:
                 if success:
                     st.success(message)
                     st.session_state.show_registration = False # Volver a la pantalla de login
+                    st.rerun() # Rerun para mostrar el formulario de login actualizado
                 else:
                     st.error(message)
             else:
@@ -406,6 +409,7 @@ if st.session_state.logged_in:
         st.session_state.username = None
         st.session_state.user_difficulty = 1
         st.session_state.current_text_id = None
+        st.session_state.current_text = None # Also clear current_text
         st.session_state.current_questions = None
         st.session_state.answers_submitted = False
         st.session_state.selected_options = {}
@@ -441,16 +445,19 @@ if st.session_state.logged_in:
                 except Exception as e:
                     st.error(f"Error al procesar la respuesta de la API o guardar en la base de datos: {e}")
                     st.write("Respuesta de la API (para depuración):", api_response) # Mostrar respuesta para depurar
+            else:
+                 st.error("No se pudo obtener el texto y las preguntas de la API.")
+
 
     # --- Sección para mostrar texto y preguntas ---
-    if st.session_state.current_text_id:
+    if st.session_state.current_text_id and st.session_state.current_text and st.session_state.current_questions:
         st.subheader(f"Texto sobre: {st.session_state.current_text['topic']}")
         st.write(st.session_state.current_text['content'])
 
         st.subheader("Preguntas de Comprensión")
 
         # Mostrar preguntas y opciones
-        user_answers = {}
+        # user_answers = {} # This variable was not used
         for i, question in enumerate(st.session_state.current_questions):
             st.markdown(f"**Pregunta {i+1}:** {question['question_text']}")
             options_list = [opt['option_text'] for opt in question['options']]
@@ -475,13 +482,17 @@ if st.session_state.logged_in:
         if st.button("Enviar Respuestas", disabled=st.session_state.answers_submitted):
             st.session_state.answers_submitted = True
             correct_count = 0
-            total_questions = len(st.session_state.current_questions)
+            # Add a check here before accessing len()
+            if st.session_state.current_questions:
+                total_questions = len(st.session_state.current_questions)
+            else:
+                total_questions = 0 # Should not happen if the button is enabled correctly
 
             st.subheader("Resultados y Retroalimentación")
-            for question in st.session_state.current_questions:
+            for i, question in enumerate(st.session_state.current_questions):
                 selected_option_id = st.session_state.selected_options.get(question['id'])
                 is_correct = False
-                feedback = ""
+                # feedback = "" # This variable was not used
 
                 st.markdown(f"**Pregunta {i+1}:** {question['question_text']}")
 
@@ -498,16 +509,16 @@ if st.session_state.logged_in:
                     if selected_option and selected_option['is_correct']:
                         is_correct = True
                         correct_count += 1
-                        feedback = "¡Correcto!"
-                        st.success(f"Tu respuesta: {selected_option['option_text']} - {feedback}")
+                        # feedback = "¡Correcto!" # Variable not used
+                        st.success(f"Tu respuesta: {selected_option['option_text']} - ¡Correcto!")
                     else:
-                        feedback = f"Incorrecto. La respuesta correcta es: {correct_option['option_text']}"
-                        st.error(f"Tu respuesta: {selected_option['option_text']} - {feedback}")
+                        # feedback = f"Incorrecto. La respuesta correcta es: {correct_option['option_text']}" # Variable not used
+                        st.error(f"Tu respuesta: {selected_option['option_text']} - Incorrecto. La respuesta correcta es: {correct_option['option_text']}")
 
                     # Registrar el progreso
                     record_progress(st.session_state.user_id, st.session_state.current_text_id, question['id'], selected_option_id, is_correct)
                 else:
-                    feedback = "No respondiste a esta pregunta."
+                    # feedback = "No respondiste a esta pregunta." # Variable not used
                     st.warning(f"No respondiste a esta pregunta.")
                     # Registrar el progreso (sin respuesta)
                     record_progress(st.session_state.user_id, st.session_state.current_text_id, question['id'], None, None)
@@ -526,12 +537,14 @@ if st.session_state.logged_in:
             st.session_state.current_questions = None
             st.session_state.selected_options = {} # Limpiar opciones seleccionadas
             # No resetear answers_submitted aquí, se reseteará al generar nuevo texto
+            st.rerun() # Rerun to clear the displayed questions and feedback
 
         # Mostrar retroalimentación si las respuestas ya fueron enviadas
-        if st.session_state.answers_submitted:
+        # Add a check here before accessing len()
+        if st.session_state.answers_submitted and st.session_state.current_questions:
              st.subheader("Resultados y Retroalimentación")
              correct_count = 0
-             total_questions = len(st.session_state.current_questions)
+             total_questions = len(st.session_state.current_questions) # This line was causing the error before the check
 
              for i, question in enumerate(st.session_state.current_questions):
                  selected_option_id = st.session_state.selected_options.get(question['id'])
@@ -557,6 +570,10 @@ if st.session_state.logged_in:
 
              st.subheader("Resumen")
              st.write(f"Obtuviste {correct_count} de {total_questions} respuestas correctas.")
+             # The state is cleaned up after the first submission, so this block might not be needed or needs adjustment
+             # to display results from the database if the state is cleared.
+             # For now, the primary feedback is shown immediately after clicking "Enviar Respuestas".
+             pass # Keep this pass to indicate the block is intentionally empty or handled elsewhere after the state is cleared.
 
 
     # --- Sección de Progreso del Estudiante ---
