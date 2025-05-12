@@ -42,12 +42,12 @@ def init_db():
                   total_preguntas INTEGER,
                   FOREIGN KEY(usuario_id) REFERENCES usuarios(id))''')
     
-    # Tabla de sesiones
+    # Tabla de sesiones (corregida)
     c.execute('''CREATE TABLE IF NOT EXISTS sesiones
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   usuario_id INTEGER,
                   texto TEXT,
-                  preguntas TEXT,  # JSON con preguntas y respuestas
+                  preguntas TEXT,  -- JSON con preguntas y respuestas
                   fecha TIMESTAMP,
                   FOREIGN KEY(usuario_id) REFERENCES usuarios(id))''')
     
