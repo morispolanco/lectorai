@@ -1,55 +1,53 @@
+
 import streamlit as st
 import sqlite3
 import requests
 import json
 
-# Configuración de la API de OpenRouter
-OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-# Conexión a la base de datos SQLite
-conn = sqlite3.connect("progreso.db")
+# Configura la conexión a la base de datos
+conn = sqlite3.connect('estudiantes.db')
 cursor = conn.cursor()
 
-# Crear tabla para registrar estudiantes
-cursor.execute("""
+# Crea la tabla de estudiantes si no existe
+cursor.execute('''
     CREATE TABLE IF NOT EXISTS estudiantes (
         id INTEGER PRIMARY KEY,
         nombre TEXT NOT NULL,
         progreso REAL DEFAULT 0
-    );
-""")
+    )
+''')
 
-# Crear tabla para registrar respuestas
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS respuestas (
+# Crea la tabla de preguntas si no existe
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS preguntas (
         id INTEGER PRIMARY KEY,
         estudiante_id INTEGER NOT NULL,
-        pregunta TEXT NOT NULL,
-        respuesta TEXT NOT NULL,
-        correcta INTEGER NOT NULL,
+        texto TEXT NOT NULL,
+        respuesta_correcta TEXT NOT NULL,
+        nivel_dificultad REAL NOT NULL,
         FOREIGN KEY (estudiante_id) REFERENCES estudiantes (id)
-    );
-""")
+    )
+''')
 
-# Función para generar texto dinámico
-def generar_texto(area):
-    payload = {
-        "model": "meta-llama/llama-4-maverick:free",
-        "messages": [
+# Función para obtener un texto dinámico desde la API de OpenRouter
+def obtener_texto():
+    api_key = st.secrets.openrouter_api_key
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_key}'
+    }
+    data = {
+        'model': 'meta-llama/llama-4-maverick:free',
+        'messages': [
             {
-                "role": "user",
-                "content": f"Genera un texto sobre {area} para un estudiante de bachillerato."
+                'role': 'user',
+                'content': 'Genera un texto sobre cultura general'
             }
         ]
     }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}"
-    }
-    response = requests.post(OPENROUTER_API_URL, json=payload, headers=headers)
+    response = requests.post('https://openrouter.ai/api/v1/chat/completions', headers=headers, data=json.dumps(data))
     if response.status_code == 200:
-        return response.json()["choices"][0]["message"]["content"]
+        return response.json()['choices'][0]['message']['content']
     else:
         return None
 
@@ -57,57 +55,53 @@ def generar_texto(area):
 def generar_preguntas(texto):
     preguntas = []
     for i in range(5):
-        pregunta = f"Pregunta {i+1}: {texto.split('.')[i%len(texto.split('.'))]}"
-        opciones = [f"Respuesta {j+1}" for j in range(4)]
-        respuesta_correcta = f"Respuesta {i%4 + 1}"
-        preguntas.append((pregunta, opciones, respuesta_correcta))
+        pregunta = {
+            'texto': f'Pregunta {i+1}: {texto.split(".")[i]}',
+            'opciones': [f'Opción {j+1}' for j in range(4)],
+            'respuesta_correcta': f'Opción {i+1}'
+        }
+        preguntas.append(pregunta)
     return preguntas
 
-# Página de inicio
-st.title("Mejora tu comprensión lectora")
-st.write("Bienvenido a nuestra aplicación de comprensión lectora.")
+# Página de registro de estudiantes
+def registro_estudiantes():
+    st.title('Registro de Estudiantes')
+    nombre = st.text_input('Nombre del estudiante')
+    if st.button('Registrar'):
+        cursor.execute('INSERT INTO estudiantes (nombre) VALUES (?)', (nombre,))
+        conn.commit()
+        st.success('Estudiante registrado con éxito')
 
-# Registro de estudiantes
-st.subheader("Registro de estudiantes")
-nombre = st.text_input("Ingrese su nombre:")
-if st.button("Registrarse"):
-    cursor.execute("INSERT INTO estudiantes (nombre) VALUES (?)", (nombre,))
-    conn.commit()
-    st.success("Registro exitoso!")
+# Página de evaluación
+def evaluacion():
+    st.title('Evaluación')
+    estudiante_id = st.selectbox('Seleccione un estudiante', [row[0] for row in cursor.execute('SELECT id, nombre FROM estudiantes').fetchall()])
+    texto = obtener_texto()
+    if texto:
+        st.write(texto)
+        preguntas = generar_preguntas(texto)
+        for pregunta in preguntas:
+            st.write(pregunta['texto'])
+            opcion = st.selectbox('Seleccione una opción', pregunta['opciones'])
+            if st.button('Enviar'):
+                if opcion == pregunta['respuesta_correcta']:
+                    st.success('Respuesta correcta')
+                    cursor.execute('INSERT INTO preguntas (estudiante_id, texto, respuesta_correcta, nivel_dificultad) VALUES (?, ?, ?, ?)', 
+                                   (estudiante_id, pregunta['texto'], pregunta['respuesta_correcta'], 1))
+                else:
+                    st.error('Respuesta incorrecta')
+                    cursor.execute('INSERT INTO preguntas (estudiante_id, texto, respuesta_correcta, nivel_dificultad) VALUES (?, ?, ?, ?)', 
+                                   (estudiante_id, pregunta['texto'], pregunta['respuesta_correcta'], 0))
+                conn.commit()
 
-# Selección de área de interés
-st.subheader("Seleccione un área de interés")
-area = st.selectbox("Área de interés", ["Cultura general", "Actualidad", "Ciencia", "Tecnología", "Historia", "Filosofía"])
+# Página principal
+def main():
+    st.title('Mejora tu comprensión lectora')
+    page = st.selectbox('Seleccione una página', ['Registro de Estudiantes', 'Evaluación'])
+    if page == 'Registro de Estudiantes':
+        registro_estudiantes()
+    elif page == 'Evaluación':
+        evaluacion()
 
-# Generación de texto y preguntas
-texto = generar_texto(area)
-if texto:
-    st.subheader("Texto")
-    st.write(texto)
-    preguntas = generar_preguntas(texto)
-    for i, (pregunta, opciones, respuesta_correcta) in enumerate(preguntas):
-        st.subheader(f"Pregunta {i+1}")
-        st.write(pregunta)
-        respuesta = st.selectbox("Seleccione una respuesta", opciones)
-        if st.button("Enviar respuesta"):
-            # Verificar respuesta
-            if respuesta == respuesta_correcta:
-                st.success("Respuesta correcta!")
-                cursor.execute("INSERT INTO respuestas (estudiante_id, pregunta, respuesta, correcta) VALUES (?, ?, ?, ?)",
-                               (1, pregunta, respuesta, 1))
-            else:
-                st.error("Respuesta incorrecta")
-                cursor.execute("INSERT INTO respuestas (estudiante_id, pregunta, respuesta, correcta) VALUES (?, ?, ?, ?)",
-                               (1, pregunta, respuesta, 0))
-            conn.commit()
-else:
-    st.error("No se pudo generar texto")
-
-# Página de progreso
-st.subheader("Progreso")
-cursor.execute("SELECT progreso FROM estudiantes WHERE id = 1")
-progreso = cursor.fetchone()[0]
-st.write(f"Progreso: {progreso}%")
-
-# Cerrar conexión a la base de datos
-conn.close()
+if __name__ == '__main__':
+    main()
