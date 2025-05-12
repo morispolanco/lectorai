@@ -1,151 +1,83 @@
 import streamlit as st
 import sqlite3
 import requests
+import os
 import json
 
-# Configuración inicial
-st.title("Lector AI - Mejora tu comprensión lectora")
+# Configuración de la API de OpenRouter
+openrouter_api_key = st.secrets["OPENROUTER_API_KEY"]
+openrouter_api_url = "https://openrouter.ai/api/v1/chat/completions"
 
 # Conexión a la base de datos SQLite
-conn = sqlite3.connect("lectorai.db")
+conn = sqlite3.connect("estudiantes.db")
 cursor = conn.cursor()
 
-# Crear tablas si no existen
+# Creación de la tabla de estudiantes
 cursor.execute("""
-    CREATE TABLE IF NOT EXISTS usuarios (
+    CREATE TABLE IF NOT EXISTS estudiantes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nombre TEXT NOT NULL,
-        correo TEXT NOT NULL UNIQUE,
-        contrasena TEXT NOT NULL,
-        puntaje INTEGER DEFAULT 0,
-        nivel TEXT DEFAULT 'basico'
+        nombre TEXT,
+        tema TEXT,
+        puntaje REAL
     );
 """)
 
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS progreso (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        usuario_id INTEGER NOT NULL,
-        fecha TEXT NOT NULL,
-        texto_id TEXT NOT NULL,
-        calificacion INTEGER NOT NULL,
-        FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
-    );
-""")
-
-conn.commit()
-
-# Función para obtener texto y preguntas desde la API
-def obtener_texto_y_preguntas(nivel):
-    api_key = st.secrets["openrouter_key"]
+# Función para generar texto y preguntas a través de la API de OpenRouter
+def generar_texto_y_preguntas(tema):
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
+        "Authorization": f"Bearer {openrouter_api_key}"
     }
-    prompt = f"Genera un texto sobre cultura general, actualidad, ciencia, tecnología, historia o filosofía, acompañado de 5 preguntas de opción múltiple que evalúen vocabulario, inferencia y pensamiento crítico. Nivel: {nivel}"
-    
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers=headers,
-        json={
-            "model": "meta-llama/llama-4-maverick:free",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }
-            ]
-        }
-    )
-    
-    if response.status_code == 200:
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
-    else:
-        return "Error al obtener el texto y preguntas."
+    data = {
+        "model": "meta-llama/llama-4-maverick:free",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Generar un texto sobre {tema}"
+                    }
+                ]
+            }
+        ]
+    }
+    response = requests.post(openrouter_api_url, headers=headers, data=json.dumps(data))
+    return response.json()
 
-# Función para registrar usuario
-def registrar_usuario(nombre, correo, contrasena):
-    cursor.execute("""
-        INSERT INTO usuarios (nombre, correo, contrasena)
-        VALUES (?, ?, ?);
-    """, (nombre, correo, contrasena))
+# Función para registrar la actividad del estudiante
+def registrar_actividad(estudiante, tema, puntaje):
+    cursor.execute("INSERT INTO estudiantes (nombre, tema, puntaje) VALUES (?, ?, ?)", (estudiante, tema, puntaje))
     conn.commit()
 
-# Función para autenticar usuario
-def autenticar_usuario(correo, contrasena):
-    cursor.execute("""
-        SELECT * FROM usuarios
-        WHERE correo = ? AND contrasena = ?;
-    """, (correo, contrasena))
-    return cursor.fetchone()
+# Interfaz de la aplicación
+st.title("Aplicación de Comprensión Lectora")
 
-# Función para actualizar progreso
-def actualizar_progreso(usuario_id, texto_id, calificacion):
-    cursor.execute("""
-        INSERT INTO progreso (usuario_id, fecha, texto_id, calificacion)
-        VALUES (?, CURRENT_DATE, ?, ?);
-    """, (usuario_id, texto_id, calificacion))
-    conn.commit()
+# Registro de estudiantes
+estudiante = st.text_input("Ingrese su nombre")
 
-# Interfaz de usuario
-with st.form("login_form"):
-    st.subheader("Inicia sesión o regístrate")
-    nombre = st.text_input("Nombre")
-    correo = st.text_input("Correo electrónico")
-    contrasena = st.text_input("Contraseña", type="password")
-    if st.form_submit_button("Registro"):
-        registrar_usuario(nombre, correo, contrasena)
-        st.success("Registro exitoso. Ahora puedes iniciar sesión.")
-    elif st.form_submit_button("Login"):
-        usuario = autenticar_usuario(correo, contrasena)
-        if usuario:
-            st.success("Bienvenido, " + usuario[1])
-            # Aquí iría la lógica para mostrar el texto y las preguntas
-        else:
-            st.error("Correo o contraseña incorrectos.")
+# Selección de tema
+temas = ["Cultura General", "Actualidad", "Ciencia", "Tecnología", "Historia", "Filosofía"]
+tema_seleccionado = st.selectbox("Seleccione un tema", temas)
 
-# Interfaz principal del estudiante
-if st.button("Empezar a leer"):
-    nivel = "basico"  # Nivel inicial
-    texto_completo = obtener_texto_y_preguntas(nivel)
-    
-    # Procesar el texto y las preguntas
-    # Asumimos que el texto_completo viene en formato JSON con "texto" y "preguntas"
-    try:
-        data = json.loads(texto_completo)
-        texto = data["texto"]
-        preguntas = data["preguntas"]
-        
-        st.subheader("Lee el siguiente texto y responde las preguntas:")
-        st.markdown(texto)
-        
-        score = 0
-        for i, pregunta in enumerate(preguntas):
-            st.subheader(f"Pregunta {i+1}")
-            st.write(pregunta["enunciado"])
-            
-            opciones = pregunta["opciones"]
-            respuesta_usuario = st.radio("", opciones, key=f"pregunta_{i}")
-            
-            if respuesta_usuario == pregunta["respuesta_correcta"]:
-                score += 1
-                st.success("Respuesta correcta!")
-            else:
-                st.error(f"Respuesta incorrecta. La respuesta correcta era {pregunta['respuesta_correcta']}")
-        
-        st.subheader(f"Calificación final: {score}/{len(preguntas)}")
-        
-        # Actualizar progreso en la base de datos
-        actualizar_progreso(usuario[0], data["texto_id"], score)
-        
-    except json.JSONDecodeError:
-        st.error("Error al procesar el texto y las preguntas.")
+# Generación de texto y preguntas
+if st.button("Generar texto y preguntas"):
+    texto_y_preguntas = generar_texto_y_preguntas(tema_seleccionado)
+    st.write(texto_y_preguntas)
+
+# Presentación de texto y preguntas
+if st.button("Presentar texto y preguntas"):
+    # Presentar el texto y las preguntas al estudiante
+    st.write("Texto y preguntas")
+
+    # Retroalimentación inmediata
+    respuesta = st.text_input("Ingrese su respuesta")
+    if st.button("Enviar respuesta"):
+        # Evaluar la respuesta y proporcionar retroalimentación
+        st.write("Retroalimentación")
+
+        # Registrar la actividad del estudiante
+        registrar_actividad(estudiante, tema_seleccionado, 0)
 
 # Cerrar la conexión a la base de datos
 conn.close()
