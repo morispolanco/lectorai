@@ -456,7 +456,7 @@ if st.session_state.logged_in:
                          st.write("Respuesta de la API (para depuración):", api_response) # Mostrar respuesta para depurar
                 except Exception as e:
                     st.error(f"Error al procesar la respuesta de la API o guardar en la base de datos: {e}")
-                    st.write("Respuesta de la API (para depuración):", api_response) # Mostrar respuesta para depurar
+                    st.write("Respuesta de la API (para depuración):", api_response) # Mostrar respuesta para depuración
             else:
                  st.error("No se pudo obtener el texto y las preguntas de la API.")
 
@@ -474,14 +474,23 @@ if st.session_state.logged_in:
             st.markdown(f"**Pregunta {i+1}:** {question['question_text']}")
             options_list = [opt['option_text'] for opt in question['options']]
 
-            # Usar un key único para cada radio button group
-            # Guardar la opción seleccionada en el estado de sesión
-            st.session_state.selected_options[question['id']] = st.radio(
+            # Get the current selected value from session state, or None if not set
+            current_selection = st.session_state.selected_options.get(question['id'], None)
+            # Find the index of the current selection
+            default_index = options_list.index(current_selection) if current_selection in options_list else None
+
+
+            # Use a unique key for each radio button group
+            selected_option_text = st.radio(
                 f"Selecciona una opción para la pregunta {i+1}:",
                 options_list,
                 key=f"question_{question['id']}",
-                index=None # Start with no option selected
+                index=default_index # Set the index based on session state
             )
+
+            # Store the selected option text in session state AFTER the radio button call
+            st.session_state.selected_options[question['id']] = selected_option_text
+
 
         # Botón para enviar respuestas - Solo visible si las respuestas no han sido enviadas
         if st.button("Enviar Respuestas"):
