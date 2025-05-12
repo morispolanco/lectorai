@@ -1,107 +1,124 @@
-
 import streamlit as st
-import sqlite3
 import requests
-import json
+import sqlite3
+import hashlib
+from streamlit import secrets
 
-# Configura la conexión a la base de datos
-conn = sqlite3.connect('estudiantes.db')
+# Configuración inicial
+st.title("Comprensión Lectora para Bachillerato")
+
+# Conexión a SQLite
+conn = sqlite3.connect("estudiantes.db")
 cursor = conn.cursor()
 
-# Crea la tabla de estudiantes si no existe
-cursor.execute('''
+# Crear tablas si no existen
+cursor.execute("""
     CREATE TABLE IF NOT EXISTS estudiantes (
-        id INTEGER PRIMARY KEY,
-        nombre TEXT NOT NULL,
-        progreso REAL DEFAULT 0
+        username TEXT PRIMARY KEY,
+        password TEXT
     )
-''')
-
-# Crea la tabla de preguntas si no existe
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS preguntas (
-        id INTEGER PRIMARY KEY,
-        estudiante_id INTEGER NOT NULL,
-        texto TEXT NOT NULL,
-        respuesta_correcta TEXT NOT NULL,
-        nivel_dificultad REAL NOT NULL,
-        FOREIGN KEY (estudiante_id) REFERENCES estudiantes (id)
+""")
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS progreso (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT,
+        fecha DATE,
+        nivel_dificultad INTEGER,
+        puntuacion INTEGER,
+        categoria TEXT,
+        FOREIGN KEY(username) REFERENCES estudiantes(username)
     )
-''')
+""")
 
-# Función para obtener un texto dinámico desde la API de OpenRouter
-def obtener_texto():
-    api_key = st.secrets.openrouter_api_key
+# Función para generar texto y preguntas desde la API
+def generar_contenido(categoria, nivel_dificultad):
+    api_key = secrets["API_KEY"]
     headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {api_key}'
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
     }
-    data = {
-        'model': 'meta-llama/llama-4-maverick:free',
-        'messages': [
-            {
-                'role': 'user',
-                'content': 'Genera un texto sobre cultura general'
-            }
-        ]
+    payload = {
+        "model": "meta-llama/llama-4-maverick:free",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"Genera un texto sobre {categoria} con 5 preguntas de opción múltiple. Nivel de dificultad: {nivel_dificultad}"
+                }
+            ]
+        }]
     }
-    response = requests.post('https://openrouter.ai/api/v1/chat/completions', headers=headers, data=json.dumps(data))
-    if response.status_code == 200:
-        return response.json()['choices'][0]['message']['content']
-    else:
-        return None
+    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+    return response.json()
 
-# Función para generar preguntas
-def generar_preguntas(texto):
-    preguntas = []
-    for i in range(5):
-        pregunta = {
-            'texto': f'Pregunta {i+1}: {texto.split(".")[i]}',
-            'opciones': [f'Opción {j+1}' for j in range(4)],
-            'respuesta_correcta': f'Opción {i+1}'
-        }
-        preguntas.append(pregunta)
-    return preguntas
+# Función para registrar estudiantes
+def registrar_estudiante(username, password):
+    hashed_password = hashlib.sha256(password.encode()).hexdigest()
+    cursor.execute("INSERT INTO estudiantes VALUES (?, ?)", (username, hashed_password))
+    conn.commit()
 
-# Página de registro de estudiantes
-def registro_estudiantes():
-    st.title('Registro de Estudiantes')
-    nombre = st.text_input('Nombre del estudiante')
-    if st.button('Registrar'):
-        cursor.execute('INSERT INTO estudiantes (nombre) VALUES (?)', (nombre,))
-        conn.commit()
-        st.success('Estudiante registrado con éxito')
+# Función para iniciar sesión
+def iniciar_sesion(username, password):
+    hashed_password = hashlib.sha256(password.encode()).hexdigest()
+    cursor.execute("SELECT * FROM estudiantes WHERE username = ? AND password = ?", (username, hashed_password))
+    return cursor.fetchone() is not None
 
-# Página de evaluación
-def evaluacion():
-    st.title('Evaluación')
-    estudiante_id = st.selectbox('Seleccione un estudiante', [row[0] for row in cursor.execute('SELECT id, nombre FROM estudiantes').fetchall()])
-    texto = obtener_texto()
-    if texto:
-        st.write(texto)
-        preguntas = generar_preguntas(texto)
-        for pregunta in preguntas:
-            st.write(pregunta['texto'])
-            opcion = st.selectbox('Seleccione una opción', pregunta['opciones'])
-            if st.button('Enviar'):
-                if opcion == pregunta['respuesta_correcta']:
-                    st.success('Respuesta correcta')
-                    cursor.execute('INSERT INTO preguntas (estudiante_id, texto, respuesta_correcta, nivel_dificultad) VALUES (?, ?, ?, ?)', 
-                                   (estudiante_id, pregunta['texto'], pregunta['respuesta_correcta'], 1))
-                else:
-                    st.error('Respuesta incorrecta')
-                    cursor.execute('INSERT INTO preguntas (estudiante_id, texto, respuesta_correcta, nivel_dificultad) VALUES (?, ?, ?, ?)', 
-                                   (estudiante_id, pregunta['texto'], pregunta['respuesta_correcta'], 0))
-                conn.commit()
+# Interfaz del usuario
+with st.sidebar:
+    st.header("Inicio de Sesión")
+    username = st.text_input("Nombre de usuario")
+    password = st.text_input("Contraseña", type="password")
+    if st.button("Ingresar"):
+        if iniciar_sesion(username, password):
+            st.success("Bienvenido " + username)
+        else:
+            st.error("Usuario o contraseña incorrectos")
+    st.button("Registro")
 
 # Página principal
-def main():
-    st.title('Mejora tu comprensión lectora')
-    page = st.selectbox('Seleccione una página', ['Registro de Estudiantes', 'Evaluación'])
-    if page == 'Registro de Estudiantes':
-        registro_estudiantes()
-    elif page == 'Evaluación':
-        evaluacion()
+if username and password:
+    st.header("Categorías")
+    categorias = ["Cultura General", "Actualidad", "Ciencia", "Tecnología", "Historia", "Filosofía"]
+    categoria_seleccionada = st.selectbox("Seleccione una categoría", categorias)
+    
+    if categoria_seleccionada:
+        # Obtener contenido de la API
+        response = generar_contenido(categoria_seleccionada, 1)  # Nivel de dificultad inicial
+        texto = response["choices"][0]["message"]["text"]
+        preguntas = response["choices"][0]["message"]["preguntas"]
+        
+        st.subheader("Texto")
+        st.markdown(texto)
+        
+        st.subheader("Preguntas")
+        score = 0
+        for i, pregunta in enumerate(preguntas):
+            st.write(f"Pregunta {i+1}: {pregunta['pregunta']}")
+            opciones = pregunta["opciones"]
+            respuesta_usuario = st.selectbox(f"Seleccione la respuesta", opciones)
+            if respuesta_usuario == pregunta["respuesta_correcta"]:
+                score += 1
+                st.success("Respuesta correcta!")
+            else:
+                st.error(f"Respuesta incorrecta. La respuesta correcta era {pregunta['respuesta_correcta']}")
+        
+        # Actualizar progreso
+        cursor.execute("INSERT INTO progreso (username, fecha, nivel_dificultad, puntuacion, categoria) VALUES (?, DATE('now'), 1, ?, ?)",
+                       (username, score, categoria_seleccionada))
+        conn.commit()
 
-if __name__ == '__main__':
-    main()
+# Registro de nuevos estudiantes
+if st.button("Registro"):
+    with st.form("registro_form"):
+        new_username = st.text_input("Nombre de usuario")
+        new_password = st.text_input("Contraseña", type="password")
+        if st.form_submit_button("Registrar"):
+            if cursor.execute("SELECT username FROM estudiantes WHERE username = ?", (new_username,)).fetchone():
+                st.error("Este nombre de usuario ya existe")
+            else:
+                registrar_estudiante(new_username, new_password)
+                st.success("Registro exitoso!")
+
+# Cerrar conexión
+conn.close()
